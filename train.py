@@ -1,5 +1,4 @@
 seed = 42
-
 import numpy as np
 np.random.seed(seed)
 import random
@@ -12,9 +11,11 @@ import matplotlib.pyplot as plt
 #from imblearn.under_sampling import RandomUnderSampler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import GridSearchCV
-from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.model_selection import train_test_split
+import pickle
+
+grid_search = False
 
 df = pd.read_csv('data.csv')
 
@@ -106,7 +107,8 @@ class KobeModel():
 
         Return X, y features and target Rig State
         """
-        self.cols_to_dummies = ['shot_type', 'combined_shot_type', 'shot_zone_area', 'shot_zone_basic', 'shot_zone_range', 'action_type']
+        self.cols_to_dummies = ['shot_type', 'combined_shot_type', 'shot_zone_area',
+                                'shot_zone_basic', 'shot_zone_range', 'action_type', 'opponent']
         self.to_norm = []
         self.past_features = []
         self.target = target
@@ -194,33 +196,43 @@ class KobeModel():
         X: pd.Dataframe with feature engineering
         y: the target
         """
-        df['home'] = df['matchup'].str.contains('vs').astype('int')  # 1 if home play else 0
-        action_types = df['action_type'].value_counts().index.values[:15]  # 96% of action type are in the 15 first (of 57) actions
-        df.loc[~df['action_type'].isin(action_types), 'action_type'] = 'Other'
+        tempo = df.copy()
+        logger.info('TRANSFORMING DATASET')
 
+        if 'matchup' in df.columns:
+            df['home'] = df['matchup'].str.contains('vs').astype('int')  # 1 if home play else 0
+
+        if 'action_type' in df.columns:
+            action_types = df['action_type'].value_counts().index.values[:15]  # 96% of action type are in the 15 first (of 57) actions
+            df.loc[~df['action_type'].isin(action_types), 'action_type'] = 'Other'
 
         for col in self.cols_to_dummies:
-            df = pd.concat([df, pd.get_dummies(df[col], prefix=col)], axis=1)
-            df.drop(columns=col, inplace=True)
+            if col in df.columns:
+                df = pd.concat([df, pd.get_dummies(df[col], prefix=col)], axis=1)
+                df.drop(columns=col, inplace=True,  errors='ignore')
 
-        df['game_date'] = pd.to_datetime(df['game_date'])
-        df['exp_year'] = df['game_date'].dt.year - df['game_date'].dt.year.min()
-        df['game_month'] = df['game_date'].dt.month
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date'])
+            df['exp_year'] = df['game_date'].dt.year - df['game_date'].dt.year.min()
+            df['game_month'] = df['game_date'].dt.month
 
-        df.drop(columns='game_date', inplace=True)
+        df.drop(columns='game_date', inplace=True, errors='ignore')
 
         df = self.normalize_features(df, to_norm=self.to_norm) if NORM else df
 
         df = self.add_temporality(df, features=self.past_features) if TEMPO else df
         df = self.shift_values(df, features=self.past_features) if TEMPO else df
 
-        df.drop(columns=['game_event_id', 'game_id', 'team_name', 'team_id', 'matchup', 'shot_id', 'season'],
-                inplace=True)
+        df.drop(columns=['game_event_id', 'game_id', 'team_name', 'team_id', 'matchup', 'shot_id', 'season', 'loc_x', 'loc_y'],
+                inplace=True,  errors='ignore') #Drop usless/redondant features
 
         df.dropna(inplace=True)
 
-        y = df[self.target]
-        X = df.drop(columns=self.target)
+        X = df.drop(columns=self.target, errors='ignore')
+
+        X = X[['minutes_remaining', 'shot_distance', 'lat', 'lon']] #for app purpose
+
+        y = df[self.target] if self.target in df.columns else 0
 
         if BALANCE:
             X, y = self.balance_dataset(X, y)
@@ -228,53 +240,60 @@ class KobeModel():
 
         return X, y
 
-### Model training --> Transform and fit
 
-X, y = KobeModel().transform(df)
+if __name__ == '__main__':
 
-X.drop(columns='opponent', inplace=True)
+    ### Model training --> Transform and fit
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=seed, shuffle=True)
-
-Rforest = RandomForestClassifier(n_estimators=200, random_state=seed, min_samples_split=20, criterion='gini')
-
-Rforest.fit(X_train, y_train)
-
-param_grid = {
-                 'n_estimators': [150, 200],
-                 'min_samples_split': [2, 10, 20],
-                 'max_depth' : [None, 10 , 20 , 50],
-                 'criterion' : ['gini', 'entropy']
-             }
+    X, y = KobeModel().transform(df)
 
 
-grid_clf = GridSearchCV(Rforest, param_grid)
-grid_clf.fit(X_train, y_train)
-grid_clf.cv_results_
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=seed, shuffle=True)
+
+    Rforest = RandomForestClassifier(n_estimators=100, random_state=seed, min_samples_split=20, criterion='gini')
+
+    logger.info('Training Model')
+    Rforest.fit(X_train, y_train)
 
 
-#### Evaluate the Model #### (Better in jupyter notebook)
+    if grid_search:
 
-for name,score in zip(X_test.columns, Rforest.feature_importances_):
-  print(name,score*100)
-
-
-eval_y = Rforest.predict(X_test)
-print({'TEST SCORE': Rforest.score(X_test, y_test), 'TRAIN SCORE': Rforest.score(X_train, y_train)})
-
-
-conf_mx = confusion_matrix(y_test, eval_y)
-plot_confusion_matrix(conf_mx,target_names = ['0', '1'],
-                          title='Confusion matrix',
-                          cmap=None,
-                          normalize=False)
-
-print(classification_report(y_test, eval_y))
+        param_grid = {
+                         'n_estimators': [150, 200],
+                         'min_samples_split': [2, 10, 20],
+                         'max_depth' : [None, 10 , 20 , 50],
+                         'criterion' : ['gini', 'entropy']
+                     }
 
 
+        grid_clf = GridSearchCV(Rforest, param_grid)
+        grid_clf.fit(X_train, y_train)
+        grid_clf.best_params_
 
-#### Save The final Model ####
 
-import pickle
+    #### Evaluate the Model #### (Better in jupyter notebook)
 
-#pickle.dump(Rforest, open('RF_Kobe.sav', 'wb'))
+    logger.info('Evaluating Model Results')
+
+    #for name,score in zip(X_test.columns, Rforest.feature_importances_):
+      #print(name,score*100)
+
+
+    eval_y = Rforest.predict(X_test)
+    print({'TEST SCORE': Rforest.score(X_test, y_test), 'TRAIN SCORE': Rforest.score(X_train, y_train)})
+
+
+    conf_mx = confusion_matrix(y_test, eval_y)
+    plot_confusion_matrix(conf_mx,target_names = ['0', '1'],
+                              title='Confusion matrix',
+                              cmap=None,
+                              normalize=False)
+
+    print(classification_report(y_test, eval_y))
+
+
+
+    #### Save The final Model ####
+
+
+    #pickle.dump(Rforest, open('RF_Kobe.pkl', 'wb'))
