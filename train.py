@@ -5,8 +5,6 @@ import random
 random.seed(seed)
 import pandas as pd
 from logzero import logger
-import itertools
-import matplotlib.pyplot as plt
 #from imblearn.over_sampling import RandomOverSampler, SMOTE
 #from imblearn.under_sampling import RandomUnderSampler
 from sklearn.ensemble import RandomForestClassifier
@@ -219,7 +217,9 @@ if __name__ == '__main__':
                      }
 
 
-        grid_clf = GridSearchCV(Rforest, param_grid)
+        grid_clf = GridSearchCV(Rforest,
+                                param_grid
+                                , cv=4)
         grid_clf.fit(X_train, y_train)
         grid_clf.best_params_
 
@@ -246,5 +246,6 @@ if __name__ == '__main__':
 
    #pickle.dump(Rforest, open('RF_Kobe.pkl', 'wb'))
    #pickle.dump(Rforest, open('LGBM_Kobe.pkl', 'wb'))
+
 
 
